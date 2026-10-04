@@ -4,6 +4,7 @@ import { createRouter, createWebHistory, type RouteRecordRaw } from 'vue-router'
  * 路由表：路径与提示词逐字一致。
  * /reefs、/reefs/:id/sites、/sites/:id/belts、/belts/:id/corals、/belts/:id/fishes、/coverage
  * 全部页面懒加载，构建时自动分包。
+ * /transfers 为保护区界线调整后的站位划转双边台账（v3 新增）。
  */
 const routes: RouteRecordRaw[] = [
   { path: '/', redirect: '/reefs' },
@@ -42,6 +43,12 @@ const routes: RouteRecordRaw[] = [
     name: 'coverage-view',
     component: () => import('@/pages/CoverageView.vue'),
     meta: { title: '白化等级评定与覆盖度汇总', icon: 'PieChart' }
+  },
+  {
+    path: '/transfers',
+    name: 'transfer-board',
+    component: () => import('@/pages/TransferBoard.vue'),
+    meta: { title: '站位划转台账', icon: 'Switch' }
   },
   { path: '/:pathMatch(.*)*', redirect: '/reefs' }
 ]

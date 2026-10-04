@@ -120,16 +120,31 @@ export function useCoverage(): UseCoverageResult {
 
   const { reefs, sites } = storeToRefs(reefStore)
   const { belts } = storeToRefs(beltStore)
-  const { corals, fishes } = storeToRefs(surveyStore)
+  const { corals, fishes, ownershipIndex } = storeToRefs(surveyStore)
 
   const siteOf = (siteId: string) => sites.value.find((site) => site.id === siteId) ?? null
   const reefOf = (reefId: string) => reefs.value.find((reef) => reef.id === reefId) ?? null
 
+  /** 样带归属站位：优先外业队归属快照，缺记录时回退到样带当前站位 */
+  function ownedSiteOfBelt(beltId: string, fallbackSiteId: string) {
+    const owned = ownershipIndex.value.get(beltId)
+    if (owned) return siteOf(owned.siteId) ?? siteOf(fallbackSiteId)
+    return siteOf(fallbackSiteId)
+  }
+
+  /** 样带归属礁区 id：优先外业队归属快照，缺记录时回退到站位所属礁区 */
+  function ownedReefIdOfBelt(beltId: string, fallbackSiteId: string): string {
+    const owned = ownershipIndex.value.get(beltId)
+    if (owned && owned.reefId) return owned.reefId
+    return siteOf(fallbackSiteId)?.reefId ?? ''
+  }
+
   function buildBeltCoverage(beltId: string): BeltCoverage | null {
     const belt = belts.value.find((item) => item.id === beltId)
     if (!belt) return null
-    const site = siteOf(belt.siteId)
-    const reef = site ? reefOf(site.reefId) : null
+    const site = ownedSiteOfBelt(belt.id, belt.siteId)
+    const reefId = ownedReefIdOfBelt(belt.id, belt.siteId)
+    const reef = reefOf(reefId)
     const beltCorals = corals.value.filter((coral) => coral.beltId === belt.id)
     const beltFishes = fishes.value.filter((fish) => fish.beltId === belt.id)
     const coverCmTotal = round(
@@ -188,7 +203,13 @@ export function useCoverage(): UseCoverageResult {
   function buildSiteCoverage(siteId: string): SiteCoverage | null {
     const site = siteOf(siteId)
     if (!site) return null
-    const reef = reefOf(site.reefId)
+    // 礁区归属按该站位样带的外业队归属快照口径（划转会整站翻归属）
+    const ownedReefId =
+      belts.value
+        .filter((belt) => belt.siteId === site.id)
+        .map((belt) => ownedReefIdOfBelt(belt.id, belt.siteId))
+        .find((id) => id.length > 0) ?? site.reefId
+    const reef = reefOf(ownedReefId)
     const siteBelts = belts.value.filter((belt) => belt.siteId === site.id)
     const beltIds = new Set(siteBelts.map((belt) => belt.id))
     const siteCorals = corals.value.filter((coral) => beltIds.has(coral.beltId))

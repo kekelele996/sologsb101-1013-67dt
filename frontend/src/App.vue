@@ -5,10 +5,11 @@
  */
 import { computed, onMounted } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { DataLine, Files, Grid, Odometer, PieChart } from '@element-plus/icons-vue'
+import { DataLine, Files, Grid, Odometer, PieChart, Switch } from '@element-plus/icons-vue'
 import { useReefStore } from '@/stores/reefStore'
 import { useBeltStore } from '@/stores/beltStore'
 import { useSurveyStore } from '@/stores/surveyStore'
+import { useTransferStore } from '@/stores/transferStore'
 import { DB_NAME, DB_VERSION } from '@/utils/db'
 
 const route = useRoute()
@@ -16,11 +17,13 @@ const router = useRouter()
 const reefStore = useReefStore()
 const beltStore = useBeltStore()
 const surveyStore = useSurveyStore()
+const transferStore = useTransferStore()
 
 onMounted(() => {
   reefStore.start()
   beltStore.start()
   surveyStore.start()
+  transferStore.start()
 })
 
 /** 层级路由统一归属到最上层导航项 */
@@ -33,6 +36,7 @@ const activeKey = computed(() => {
 
 const navItems = computed(() => [
   { key: '/reefs', label: '礁区台账', icon: Odometer, badge: String(reefStore.reefs.length) },
+  { key: '/transfers', label: '站位划转', icon: Switch, badge: transferStore.pendingCount > 0 ? String(transferStore.pendingCount) : '' },
   { key: '/coverage', label: '覆盖度汇总', icon: PieChart, badge: String(surveyStore.corals.length) }
 ])
 
@@ -108,7 +112,8 @@ function go(path: string): void {
       </span>
       <span>
         礁区 {{ reefStore.reefs.length }} · 站位 {{ reefStore.sites.length }} · 样带 {{ beltStore.belts.length }} · 珊瑚记录
-        {{ surveyStore.corals.length }} · 计数记录 {{ surveyStore.fishes.length }}
+        {{ surveyStore.corals.length }} · 计数记录 {{ surveyStore.fishes.length }} · 划转单
+        {{ transferStore.transfers.length }}
       </span>
     </footer>
   </div>

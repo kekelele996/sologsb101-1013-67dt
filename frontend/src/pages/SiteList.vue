@@ -7,7 +7,7 @@
 import { computed, onMounted, reactive, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { Delete, Edit, Plus, Right } from '@element-plus/icons-vue'
+import { Delete, Edit, Plus, Right, Switch } from '@element-plus/icons-vue'
 import StatBadge from '@/components/common/StatBadge.vue'
 import FilterBar from '@/components/common/FilterBar.vue'
 import type { FilterModel } from '@/types/filter'
@@ -18,8 +18,10 @@ import RouteMissingPanel from '@/components/common/RouteMissingPanel.vue'
 import { useReefStore } from '@/stores/reefStore'
 import { useBeltStore } from '@/stores/beltStore'
 import { useSurveyStore } from '@/stores/surveyStore'
+import { useTransferStore } from '@/stores/transferStore'
 import { formatLatLng, SUBSTRATES, validateLatLng } from '@/types/site'
 import type { Site } from '@/types/site'
+import { TransferRuleError } from '@/utils/transfer'
 import { bleachGrade, bleachIndex } from '@/utils/bleach'
 import { initDatabase } from '@/utils/db'
 
@@ -28,6 +30,7 @@ const router = useRouter()
 const reefStore = useReefStore()
 const beltStore = useBeltStore()
 const surveyStore = useSurveyStore()
+const transferStore = useTransferStore()
 
 const reefId = computed(() => String(route.params.id ?? ''))
 const reef = computed(() => reefStore.reefById(reefId.value))
@@ -173,6 +176,57 @@ function gotoBelts(site: Site): void {
   void router.push(`/sites/${site.id}/belts`)
 }
 
+/* ------------------------------ 站位划转 ------------------------------ */
+
+const transferDialogVisible = ref(false)
+const transferSubmitting = ref(false)
+const transferForm = reactive({ site: null as Site | null, toReefId: '', remark: '' })
+
+/** 该站位仍在处理中（未两侧划转完成）的划转单数量（角标提示） */
+function openTransferCount(site: Site): number {
+  return transferStore.transfers.filter((t) => {
+    if (t.siteNo !== site.no) return false
+    const bothApplied = t.stationStatus === 'applied' && t.fieldStatus === 'applied'
+    const bothWithdrawn = t.stationStatus === 'withdrawn' && t.fieldStatus === 'withdrawn'
+    return !bothApplied && !bothWithdrawn
+  }).length
+}
+
+function openTransfer(site: Site): void {
+  transferForm.site = site
+  transferForm.toReefId = ''
+  transferForm.remark = ''
+  transferDialogVisible.value = true
+}
+
+const transferReefOptions = computed(() =>
+  reefStore.reefs.filter((item) => item.id !== reefId.value).map((reef) => ({ label: `${reef.name}（${reef.protectStatus}）`, value: reef.id }))
+)
+
+async function submitTransfer(): Promise<void> {
+  if (!transferForm.site) return
+  if (!transferForm.toReefId) {
+    ElMessage.warning('请选择划入的相邻礁区')
+    return
+  }
+  transferSubmitting.value = true
+  try {
+    await transferStore.create({
+      siteNo: transferForm.site.no,
+      fromReefId: reefId.value,
+      toReefId: transferForm.toReefId,
+      remark: transferForm.remark
+    })
+    ElMessage.success('划转单已建（两侧待对账），前往站位划转台账执行')
+    transferDialogVisible.value = false
+    void router.push('/transfers')
+  } catch (error) {
+    ElMessage.error(error instanceof TransferRuleError ? error.message : '建单失败')
+  } finally {
+    transferSubmitting.value = false
+  }
+}
+
 function handleFilterChange(): void {
   const query = buildQuery({
     kw: reefStore.siteFilter.keyword,
@@ -309,9 +363,18 @@ onMounted(() => {
             <span class="gb-hint gb-mono"> {{ row.bleachIndex }}</span>
           </template>
         </el-table-column>
-        <el-table-column label="操作" width="240" fixed="right">
+        <el-table-column label="操作" width="320" fixed="right">
           <template #default="{ row }">
             <el-button size="small" type="primary" :icon="Right" @click="gotoBelts(row.site)">样带</el-button>
+            <el-button size="small" :icon="Switch" @click="openTransfer(row.site)">
+              划转
+              <el-badge
+                v-if="openTransferCount(row.site) > 0"
+                :value="openTransferCount(row.site)"
+                class="page__transfer-badge"
+                type="warning"
+              />
+            </el-button>
             <el-button size="small" :icon="Edit" @click="openEdit(row.site)">编辑</el-button>
             <el-button size="small" type="danger" plain :icon="Delete" @click="removeSite(row.site)">删除</el-button>
           </template>
@@ -356,6 +419,36 @@ onMounted(() => {
         </el-button>
       </template>
     </el-dialog>
+
+    <el-dialog v-model="transferDialogVisible" title="界线调整：站位划转到相邻礁区" width="520px" :close-on-click-modal="false">
+      <el-alert
+        type="info"
+        :closable="false"
+        show-icon
+        title="建单后两侧各自按站位编号对账：管理站改站点位，外业队样带归属随站位走；对不上的一侧挂起等人定，可只撤回单侧。"
+        class="page__transfer-alert"
+      />
+      <el-form label-width="104px">
+        <el-form-item label="站位编号">
+          <el-input :model-value="transferForm.site?.no ?? ''" disabled />
+        </el-form-item>
+        <el-form-item label="划出礁区">
+          <el-input :model-value="reef?.name ?? ''" disabled />
+        </el-form-item>
+        <el-form-item label="划入礁区" required>
+          <el-select v-model="transferForm.toReefId" class="page__full" placeholder="选择相邻礁区">
+            <el-option v-for="opt in transferReefOptions" :key="opt.value" :label="opt.label" :value="opt.value" />
+          </el-select>
+        </el-form-item>
+        <el-form-item label="事由备注">
+          <el-input v-model="transferForm.remark" type="textarea" :rows="2" placeholder="如：核心区界线调整，该站位划入相邻缓冲区" maxlength="120" />
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="transferDialogVisible = false">取消</el-button>
+        <el-button type="primary" :loading="transferSubmitting" @click="submitTransfer">建划转单并去对账</el-button>
+      </template>
+    </el-dialog>
   </section>
 </template>
 
@@ -392,5 +485,13 @@ onMounted(() => {
 
 .page__full {
   width: 100%;
+}
+
+.page__transfer-badge {
+  margin-left: 6px;
+}
+
+.page__transfer-alert {
+  margin-bottom: 12px;
 }
 </style>

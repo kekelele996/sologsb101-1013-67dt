@@ -152,15 +152,16 @@ export const useReefStore = defineStore('reef', () => {
     await db.reefs.update(id, { ...patch, updatedAt: Date.now() } as never)
   }
 
-  /** 删除礁区：级联删除其站位、样带、珊瑚记录与鱼类计数 */
+  /** 删除礁区：级联删除其站位、样带、珊瑚记录、鱼类计数与样带归属快照 */
   async function removeReef(id: string): Promise<void> {
-    await db.transaction('rw', [db.reefs, db.sites, db.belts, db.corals, db.fishes], async () => {
+    await db.transaction('rw', [db.reefs, db.sites, db.belts, db.corals, db.fishes, db.ownership], async () => {
       const siteIds = (await db.sites.where('reefId').equals(id).toArray()).map((row) => row.id)
       if (siteIds.length > 0) {
         const beltIds = (await db.belts.where('siteId').anyOf(siteIds).toArray()).map((row) => row.id)
         if (beltIds.length > 0) {
           await db.corals.where('beltId').anyOf(beltIds).delete()
           await db.fishes.where('beltId').anyOf(beltIds).delete()
+          await db.ownership.where('beltId').anyOf(beltIds).delete()
           await db.belts.bulkDelete(beltIds)
         }
         await db.sites.bulkDelete(siteIds)
@@ -183,13 +184,14 @@ export const useReefStore = defineStore('reef', () => {
     await db.sites.update(id, { ...patch, updatedAt: Date.now() } as never)
   }
 
-  /** 删除站位：级联删除其样带、珊瑚记录与鱼类计数 */
+  /** 删除站位：级联删除其样带、珊瑚记录、鱼类计数与样带归属快照 */
   async function removeSite(id: string): Promise<void> {
-    await db.transaction('rw', [db.sites, db.belts, db.corals, db.fishes], async () => {
+    await db.transaction('rw', [db.sites, db.belts, db.corals, db.fishes, db.ownership], async () => {
       const beltIds = (await db.belts.where('siteId').equals(id).toArray()).map((row) => row.id)
       if (beltIds.length > 0) {
         await db.corals.where('beltId').anyOf(beltIds).delete()
         await db.fishes.where('beltId').anyOf(beltIds).delete()
+        await db.ownership.where('beltId').anyOf(beltIds).delete()
         await db.belts.bulkDelete(beltIds)
       }
       await db.sites.delete(id)

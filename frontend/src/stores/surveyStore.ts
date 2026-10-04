@@ -11,6 +11,8 @@ import type { CountCategory, FishCount, SizeClass } from '@/types/fishCount'
 import type { Reef } from '@/types/reef'
 import type { Site } from '@/types/site'
 import type { Belt } from '@/types/belt'
+import type { BeltOwnership } from '@/types/ownership'
+import { buildOwnershipIndex } from '@/utils/ownership'
 import { bleachGrade, bleachIndex, bleachedSharePct, coralCoveragePct, fishDensity, round } from '@/utils/bleach'
 
 /** 覆盖度汇总页筛选条件 */
@@ -61,6 +63,8 @@ export const useSurveyStore = defineStore('survey', () => {
   const reefs = ref<Reef[]>([])
   const sites = ref<Site[]>([])
   const belts = ref<Belt[]>([])
+  /** 外业队样带归属快照：白化结论按此口径把样带计入礁区 */
+  const ownership = ref<BeltOwnership[]>([])
   const ready = ref(false)
   const error = ref<string | null>(null)
   const filter = ref<SurveyFilterState>(createEmptySurveyFilter())
@@ -102,7 +106,13 @@ export const useSurveyStore = defineStore('survey', () => {
     watchTable<Belt>(() => db.belts).subscribe((rows) => {
       belts.value = rows
     })
+    watchTable<BeltOwnership>(() => db.ownership).subscribe((rows) => {
+      ownership.value = rows
+    })
   }
+
+  /** beltId → 外业队归属行 */
+  const ownershipIndex = computed<Map<string, BeltOwnership>>(() => buildOwnershipIndex(ownership.value))
 
   /** 某样带的珊瑚记录（按白化等级降序、覆盖长度降序） */
   function coralsOfBelt(beltId: string | null | undefined): CoralRecord[] {
@@ -141,8 +151,15 @@ export const useSurveyStore = defineStore('survey', () => {
   const coverageRows = computed<CoverageSummaryRow[]>(() =>
     belts.value
       .map((belt) => {
-        const site = sites.value.find((item) => item.id === belt.siteId)
-        const reef = site ? reefs.value.find((item) => item.id === site.reefId) : undefined
+        const stationSite = sites.value.find((item) => item.id === belt.siteId)
+        // 白化结论归属：优先外业队样带归属快照，缺记录时回退到管理站界线口径
+        const owned = ownershipIndex.value.get(belt.id)
+        const site = owned
+          ? (sites.value.find((item) => item.id === owned.siteId) ?? stationSite)
+          : stationSite
+        const stationReefId = stationSite?.reefId
+        const reefId = owned ? owned.reefId || stationReefId || '' : stationReefId || ''
+        const reef = reefs.value.find((item) => item.id === reefId)
         const beltCorals = corals.value.filter((coral) => coral.beltId === belt.id)
         const beltFishes = fishes.value.filter((fish) => fish.beltId === belt.id)
         const coverCmTotal = round(
@@ -378,6 +395,8 @@ export const useSurveyStore = defineStore('survey', () => {
     reefs,
     sites,
     belts,
+    ownership,
+    ownershipIndex,
     ready,
     error,
     filter,

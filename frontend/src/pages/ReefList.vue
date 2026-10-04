@@ -40,12 +40,17 @@ const form = reactive({
   manager: ''
 })
 
-/** 礁区卡片：汇总站位/样带/珊瑚记录数与平均白化指数 */
+/** 礁区卡片：站位按管理站界线；样带 / 珊瑚 / 白化按外业队归属口径（划转后随站位走） */
 const cards = computed(() =>
   reefStore.filteredReefs.map((reef: Reef) => {
     const sites = reefStore.sites.filter((site) => site.reefId === reef.id)
     const siteIds = new Set(sites.map((site) => site.id))
-    const belts = beltStore.belts.filter((belt) => siteIds.has(belt.siteId))
+    // 归属在本礁区的样带：优先外业归属快照，缺归属记录的样带回退到「样带站位在本礁区」
+    const belts = beltStore.belts.filter((belt) => {
+      const owned = surveyStore.ownershipIndex.get(belt.id)
+      if (owned) return owned.reefId === reef.id
+      return siteIds.has(belt.siteId)
+    })
     const beltIds = new Set(belts.map((belt) => belt.id))
     const corals = surveyStore.corals.filter((coral) => beltIds.has(coral.beltId))
     const fishes = surveyStore.fishes.filter((fish) => beltIds.has(fish.beltId))

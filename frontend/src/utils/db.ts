@@ -11,9 +11,10 @@ import type { Site } from '@/types/site'
 import type { Belt } from '@/types/belt'
 import type { CoralRecord } from '@/types/coralRecord'
 import type { FishCount } from '@/types/fishCount'
+import type { BeltOwnership, SiteTransfer } from '@/types/ownership'
 
 /** 当前数据结构版本号：每次调整字段结构必须 +1 并补迁移 */
-export const DB_VERSION = 2
+export const DB_VERSION = 3
 
 /** 数据库名（浏览器 IndexedDB 中的库名） */
 export const DB_NAME = 'gbcoralbelt'
@@ -35,6 +36,10 @@ export interface BackupPayload {
   belts: Belt[]
   corals: CoralRecord[]
   fishes: FishCount[]
+  /** v3 起：外业队样带归属快照 */
+  ownership: BeltOwnership[]
+  /** v3 起：站位划转双边台账 */
+  transfers: SiteTransfer[]
 }
 
 export class CoralBeltDatabase extends Dexie {
@@ -43,6 +48,8 @@ export class CoralBeltDatabase extends Dexie {
   belts!: Table<Belt, string>
   corals!: Table<CoralRecord, string>
   fishes!: Table<FishCount, string>
+  ownership!: Table<BeltOwnership, string>
+  transfers!: Table<SiteTransfer, string>
 
   constructor() {
     super(DB_NAME)
@@ -57,7 +64,7 @@ export class CoralBeltDatabase extends Dexie {
     })
 
     // v2：补齐筛选与统计需要的索引（位置/面积、经纬度/水深、样带长度与朝向、白化等级、类别）
-    this.version(DB_VERSION)
+    this.version(2)
       .stores({
         reefs: 'id, name, location, protectStatus, areaKm2, manager, updatedAt',
         sites: 'id, reefId, no, lat, lng, depthM, substrate, updatedAt',
@@ -85,6 +92,40 @@ export class CoralBeltDatabase extends Dexie {
               Object.assign(row, factory())
             })
         }
+      })
+
+    // v3：新增样带归属快照（外业队）与站位划转双边台账（管理站 + 外业队）。
+    // 旧数据没有归属记录，升级时按「当时礁区」回填一版：样带 → 当时站位 → 站位当时礁区。
+    this.version(DB_VERSION)
+      .stores({
+        reefs: 'id, name, location, protectStatus, areaKm2, manager, updatedAt',
+        sites: 'id, reefId, no, lat, lng, depthM, substrate, updatedAt',
+        belts: 'id, siteId, no, lengthM, orientation, surveyDate, observer, updatedAt',
+        corals: 'id, beltId, genus, form, coverCm, bleachLevel, updatedAt',
+        fishes: 'id, beltId, family, count, sizeClass, category, updatedAt',
+        ownership: 'beltId, siteId, siteNo, reefId, lastTransferId, updatedAt',
+        transfers: 'id, siteNo, fromReefId, toReefId, stationStatus, fieldStatus, updatedAt'
+      })
+      .upgrade(async (tx) => {
+        const [siteRows, beltRows] = await Promise.all([
+          tx.table<Site, string>('sites').toArray(),
+          tx.table<Belt, string>('belts').toArray()
+        ])
+        const siteById = new Map(siteRows.map((site) => [site.id, site]))
+        const now = Date.now()
+        const ownershipRows: BeltOwnership[] = beltRows.map((belt) => {
+          const site = siteById.get(belt.siteId)
+          return {
+            beltId: belt.id,
+            siteId: belt.siteId,
+            siteNo: site?.no ?? '',
+            reefId: site?.reefId ?? '',
+            lastTransferId: null,
+            createdAt: belt.createdAt ?? now,
+            updatedAt: belt.updatedAt ?? now
+          }
+        })
+        if (ownershipRows.length > 0) await tx.table<BeltOwnership, string>('ownership').bulkPut(ownershipRows)
       })
   }
 }
@@ -314,7 +355,7 @@ export async function seedDemoData(): Promise<void> {
     }
   ]
 
-  await db.transaction('rw', [db.reefs, db.sites, db.belts, db.corals, db.fishes], async () => {
+  await db.transaction('rw', [db.reefs, db.sites, db.belts, db.corals, db.fishes, db.ownership, db.transfers], async () => {
     const stamp = (offset: number): { createdAt: number; updatedAt: number } => ({
       createdAt: now + offset,
       updatedAt: now + offset
@@ -340,6 +381,23 @@ export async function seedDemoData(): Promise<void> {
         belt.fishes.map((fish, fishIndex) => ({ ...fish, ...stamp(400 + beltIndex * 100 + fishIndex) }))
       )
     )
+
+    // 外业队样带归属：新库直接按当时礁区回填一版（与 v3 升级回填口径一致）
+    const siteById = new Map(sites.map((site) => [site.id, site]))
+    const ownershipRows: BeltOwnership[] = belts.map((belt, index) => {
+      const site = siteById.get(belt.siteId)
+      return {
+        beltId: belt.id,
+        siteId: belt.siteId,
+        siteNo: site?.no ?? '',
+        reefId: site?.reefId ?? '',
+        lastTransferId: null,
+        ...stamp(200 + index)
+      }
+    })
+    await db.ownership.bulkPut(ownershipRows)
+    // 演示数据不预置划转单
+    await db.transfers.clear()
   })
 }
 
@@ -355,9 +413,21 @@ export async function initDatabase(): Promise<void> {
 
 /** 清空全部业务表（导入覆盖与重置共用） */
 export async function clearAllTables(): Promise<void> {
-  await db.transaction('rw', [db.reefs, db.sites, db.belts, db.corals, db.fishes], async () => {
-    await Promise.all([db.reefs.clear(), db.sites.clear(), db.belts.clear(), db.corals.clear(), db.fishes.clear()])
-  })
+  await db.transaction(
+    'rw',
+    [db.reefs, db.sites, db.belts, db.corals, db.fishes, db.ownership, db.transfers],
+    async () => {
+      await Promise.all([
+        db.reefs.clear(),
+        db.sites.clear(),
+        db.belts.clear(),
+        db.corals.clear(),
+        db.fishes.clear(),
+        db.ownership.clear(),
+        db.transfers.clear()
+      ])
+    }
+  )
 }
 
 /** 清空并重新播种演示数据 */
@@ -368,14 +438,16 @@ export async function resetDatabase(): Promise<void> {
 
 /** 统计各表行数，供页脚概览与覆盖度页展示 */
 export async function countAll(): Promise<Record<string, number>> {
-  const [reefs, sites, belts, corals, fishes] = await Promise.all([
+  const [reefs, sites, belts, corals, fishes, ownership, transfers] = await Promise.all([
     db.reefs.count(),
     db.sites.count(),
     db.belts.count(),
     db.corals.count(),
-    db.fishes.count()
+    db.fishes.count(),
+    db.ownership.count(),
+    db.transfers.count()
   ])
-  return { reefs, sites, belts, corals, fishes }
+  return { reefs, sites, belts, corals, fishes, ownership, transfers }
 }
 
 /** 写入结构版本号到 localStorage，便于覆盖度页比对 */

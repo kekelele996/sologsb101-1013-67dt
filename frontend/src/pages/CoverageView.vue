@@ -46,7 +46,15 @@ const router = useRouter()
 const reefStore = useReefStore()
 const surveyStore = useSurveyStore()
 
-const EMPTY_COUNTS: CountMap = { reefs: 0, sites: 0, belts: 0, corals: 0, fishes: 0 }
+const EMPTY_COUNTS: CountMap = {
+  reefs: 0,
+  sites: 0,
+  belts: 0,
+  corals: 0,
+  fishes: 0,
+  ownership: 0,
+  transfers: 0
+}
 
 const counts = ref<CountMap>(EMPTY_COUNTS)
 const lastBackupAt = ref<string | null>(null)
@@ -402,7 +410,9 @@ onMounted(() => {
     <el-card shadow="never" class="gb-panel">
       <div class="gb-panel-title">
         <h3>按礁区的白化评定</h3>
-        <span class="gb-hint">平均白化指数为礁区内各样带白化指数的算术平均</span>
+        <span class="gb-hint">
+          样带按外业队归属口径计入礁区，划转后随站位换归属，划走的样带不再算在原礁区；平均白化指数为礁区内各样带白化指数的算术平均
+        </span>
       </div>
       <el-table :data="reefSummaries" border stripe class="gb-table-compact">
         <el-table-column prop="reefName" label="礁区" min-width="160" />
@@ -479,6 +489,7 @@ onMounted(() => {
         <el-descriptions-item label="礁区 / 站位">{{ counts.reefs }} / {{ counts.sites }}</el-descriptions-item>
         <el-descriptions-item label="样带 / 珊瑚记录">{{ counts.belts }} / {{ counts.corals }}</el-descriptions-item>
         <el-descriptions-item label="鱼类计数">{{ counts.fishes }}</el-descriptions-item>
+        <el-descriptions-item label="归属快照 / 划转单">{{ counts.ownership }} / {{ counts.transfers }}</el-descriptions-item>
         <el-descriptions-item label="最近备份时间">
           {{ lastBackupAt ? new Date(lastBackupAt).toLocaleString('zh-CN') : '尚未备份' }}
         </el-descriptions-item>

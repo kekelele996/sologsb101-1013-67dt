@@ -15,22 +15,28 @@ import {
   BLEACH_LEVELS,
   type BleachLevel
 } from '@/types/coralRecord'
+import type { BeltOwnership, SiteTransfer } from '@/types/ownership'
 import { bleachGrade, bleachIndex, bleachedSharePct, coralCoveragePct, fishDensity, round } from '@/utils/bleach'
 
-/** 备份集合键名 */
-export const BACKUP_KEYS = ['reefs', 'sites', 'belts', 'corals', 'fishes'] as const
+/** 备份集合键名（v3 起含外业队归属快照与划转台账） */
+export const BACKUP_KEYS = ['reefs', 'sites', 'belts', 'corals', 'fishes', 'ownership', 'transfers'] as const
 export type BackupKey = (typeof BACKUP_KEYS)[number]
+
+/** v2 及更早备份没有后两张表，导入时需要补 */
+const LEGACY_KEYS: ReadonlyArray<BackupKey> = ['reefs', 'sites', 'belts', 'corals', 'fishes']
 
 export type CountMap = Record<BackupKey, number>
 
 /** 组装当前本地数据的完整快照 */
 export async function buildBackupPayload(): Promise<BackupPayload> {
-  const [reefs, sites, belts, corals, fishes] = await Promise.all([
+  const [reefs, sites, belts, corals, fishes, ownership, transfers] = await Promise.all([
     db.reefs.toArray(),
     db.sites.toArray(),
     db.belts.toArray(),
     db.corals.toArray(),
-    db.fishes.toArray()
+    db.fishes.toArray(),
+    db.ownership.toArray(),
+    db.transfers.toArray()
   ])
   return {
     app: 'gbcoralbelt',
@@ -40,7 +46,9 @@ export async function buildBackupPayload(): Promise<BackupPayload> {
     sites,
     belts,
     corals,
-    fishes
+    fishes,
+    ownership,
+    transfers
   }
 }
 
@@ -54,7 +62,8 @@ export function validateBackup(input: unknown): { ok: boolean; errors: string[];
   if (obj.app !== undefined && obj.app !== 'gbcoralbelt') {
     errors.push('app 字段应为 gbcoralbelt，文件来源不明')
   }
-  for (const key of BACKUP_KEYS) {
+  // 五张老表必须齐备；ownership / transfers 为 v3 新增，老备份可缺（导入时补回填）
+  for (const key of LEGACY_KEYS) {
     if (!Array.isArray(obj[key])) errors.push(`${key} 字段缺失或不是数组`)
   }
   if (errors.length > 0) return { ok: false, errors, payload: null }
@@ -66,7 +75,9 @@ export function validateBackup(input: unknown): { ok: boolean; errors: string[];
     sites: obj.sites ?? [],
     belts: obj.belts ?? [],
     corals: obj.corals ?? [],
-    fishes: obj.fishes ?? []
+    fishes: obj.fishes ?? [],
+    ownership: Array.isArray(obj.ownership) ? obj.ownership : [],
+    transfers: Array.isArray(obj.transfers) ? obj.transfers : []
   }
   return { ok: true, errors, payload }
 }
@@ -78,7 +89,9 @@ export function countPayload(payload: BackupPayload): CountMap {
     sites: payload.sites.length,
     belts: payload.belts.length,
     corals: payload.corals.length,
-    fishes: payload.fishes.length
+    fishes: payload.fishes.length,
+    ownership: payload.ownership.length,
+    transfers: payload.transfers.length
   }
 }
 
@@ -111,21 +124,53 @@ export function readFileText(file: File): Promise<string> {
   })
 }
 
-/** 导入快照：overwrite=true 先清空全部表，否则按主键合并 */
-export async function importBackup(payload: BackupPayload, overwrite: boolean): Promise<CountMap> {
-  if (overwrite) await clearAllTables()
-  await db.transaction('rw', [db.reefs, db.sites, db.belts, db.corals, db.fishes], async () => {
-    await db.reefs.bulkPut(payload.reefs)
-    await db.sites.bulkPut(payload.sites)
-    await db.belts.bulkPut(payload.belts)
-    await db.corals.bulkPut(payload.corals)
-    await db.fishes.bulkPut(payload.fishes)
+/**
+ * 旧备份没有归属记录：按「当时礁区」回填一版归属快照，口径与 v3 升级一致。
+ * 已有 ownership 的备份原样保留。
+ */
+export function backfillOwnership(payload: BackupPayload): BackupPayload {
+  if (payload.ownership.length > 0) return payload
+  const siteById = new Map(payload.sites.map((site) => [site.id, site]))
+  const stamp = Date.now()
+  const ownership: BeltOwnership[] = payload.belts.map((belt) => {
+    const site = siteById.get(belt.siteId)
+    return {
+      beltId: belt.id,
+      siteId: belt.siteId,
+      siteNo: site?.no ?? '',
+      reefId: site?.reefId ?? '',
+      lastTransferId: null,
+      createdAt: belt.createdAt ?? stamp,
+      updatedAt: belt.updatedAt ?? stamp
+    }
   })
+  return { ...payload, ownership }
+}
+
+/** 导入快照：overwrite=true 先清空全部表，否则按主键合并 */
+export async function importBackup(payloadIn: BackupPayload, overwrite: boolean): Promise<CountMap> {
+  // 旧版本备份导入时按当时礁区补一版样带归属
+  const payload = backfillOwnership(payloadIn)
+  if (overwrite) await clearAllTables()
+  await db.transaction(
+    'rw',
+    [db.reefs, db.sites, db.belts, db.corals, db.fishes, db.ownership, db.transfers],
+    async () => {
+      await db.reefs.bulkPut(payload.reefs)
+      await db.sites.bulkPut(payload.sites)
+      await db.belts.bulkPut(payload.belts)
+      await db.corals.bulkPut(payload.corals)
+      await db.fishes.bulkPut(payload.fishes)
+      await db.ownership.bulkPut(payload.ownership)
+      await db.transfers.bulkPut(payload.transfers)
+    }
+  )
   return countPayload(payload)
 }
 
 /** 追加式导入：为导入数据重新分配 id，避免覆盖现有档案 */
-export function remapIds(payload: BackupPayload): BackupPayload {
+export function remapIds(payloadIn: BackupPayload): BackupPayload {
+  const payload = backfillOwnership(payloadIn)
   const reefMap = new Map<string, string>()
   const siteMap = new Map<string, string>()
   const beltMap = new Map<string, string>()
@@ -155,7 +200,16 @@ export function remapIds(payload: BackupPayload): BackupPayload {
     id: createId('fsh'),
     beltId: beltMap.get(fish.beltId) ?? fish.beltId
   }))
-  return { ...payload, reefs, sites, belts, corals, fishes }
+  // 归属快照跟样带一起重映射；划转单涉及外部对账与既有站位，追加导入时不复制
+  const ownership: BeltOwnership[] = payload.ownership.map((row) => ({
+    ...row,
+    beltId: beltMap.get(row.beltId) ?? row.beltId,
+    siteId: siteMap.get(row.siteId) ?? row.siteId,
+    reefId: reefMap.get(row.reefId) ?? row.reefId,
+    lastTransferId: null
+  }))
+  const transfers: SiteTransfer[] = []
+  return { ...payload, reefs, sites, belts, corals, fishes, ownership, transfers }
 }
 
 /** 白化等级分布：各等级累计覆盖长度 */
@@ -191,10 +245,11 @@ export interface CoverageLine {
   conclusion: string
 }
 
-/** 按样带生成覆盖度结论行 */
+/** 按样带生成覆盖度结论行（礁区归属按外业队样带归属快照口径） */
 export function buildCoverageLines(payload: BackupPayload): CoverageLine[] {
   const reefById = new Map(payload.reefs.map((reef) => [reef.id, reef]))
   const siteById = new Map(payload.sites.map((site) => [site.id, site]))
+  const ownershipByBelt = new Map(payload.ownership.map((row) => [row.beltId, row]))
   const coralsByBelt = new Map<string, typeof payload.corals>()
   payload.corals.forEach((coral) => {
     const list = coralsByBelt.get(coral.beltId) ?? []
@@ -210,8 +265,12 @@ export function buildCoverageLines(payload: BackupPayload): CoverageLine[] {
 
   return payload.belts
     .map((belt) => {
-      const site = siteById.get(belt.siteId)
-      const reef = site ? reefById.get(site.reefId) : undefined
+      const stationSite = siteById.get(belt.siteId)
+      const owned = ownershipByBelt.get(belt.id)
+      // 样带跟着站位换归属：优先外业归属快照的站位 / 礁区，缺记录回退管理站界线
+      const site = (owned ? siteById.get(owned.siteId) : undefined) ?? stationSite
+      const reefId = owned?.reefId || stationSite?.reefId || ''
+      const reef = reefById.get(reefId)
       const corals = coralsByBelt.get(belt.id) ?? []
       const fishes = fishesByBelt.get(belt.id) ?? []
       const coverCmTotal = round(
@@ -277,12 +336,14 @@ export interface ReefSummary {
   fishTotal: number
 }
 
+/**
+ * 按礁区汇总：直接以样带结论行（已按外业归属计入对应礁区）聚合，
+ * 保证划转后划走的样带不再算在原礁区头上。
+ */
 export function buildReefSummaries(payload: BackupPayload, lines: CoverageLine[]): ReefSummary[] {
   return payload.reefs.map((reef) => {
-    const siteIds = new Set(payload.sites.filter((site) => site.reefId === reef.id).map((site) => site.id))
-    const beltIds = new Set(payload.belts.filter((belt) => siteIds.has(belt.siteId)).map((belt) => belt.id))
-    const corals = payload.corals.filter((coral) => beltIds.has(coral.beltId))
     const lines4Reef = lines.filter((line) => line.reefId === reef.id)
+    const siteIds = new Set(lines4Reef.map((line) => line.siteId))
     const avgBleachIndex =
       lines4Reef.length === 0
         ? 0
@@ -292,17 +353,15 @@ export function buildReefSummaries(payload: BackupPayload, lines: CoverageLine[]
       reefName: reef.name,
       protectStatus: reef.protectStatus,
       siteCount: siteIds.size,
-      beltCount: beltIds.size,
-      coralCount: corals.length,
+      beltCount: lines4Reef.length,
+      coralCount: lines4Reef.reduce((sum, line) => sum + line.coralCount, 0),
       coverCmTotal: round(
-        corals.reduce((sum, coral) => sum + coral.coverCm, 0),
+        lines4Reef.reduce((sum, line) => sum + line.coverCmTotal, 0),
         1
       ),
       avgBleachIndex,
       grade: bleachGrade(avgBleachIndex),
-      fishTotal: payload.fishes
-        .filter((fish) => beltIds.has(fish.beltId))
-        .reduce((sum, fish) => sum + fish.count, 0)
+      fishTotal: lines4Reef.reduce((sum, line) => sum + line.fishTotal, 0)
     }
   })
 }

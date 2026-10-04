@@ -104,7 +104,21 @@ export const useBeltStore = defineStore('belt', () => {
   ): Promise<Belt> {
     const now = Date.now()
     const row: Belt = { ...payload, siteId, id: createId('belt'), createdAt: now, updatedAt: now }
-    await db.belts.put(row)
+    // 外业队侧同步建立样带归属：新布设样带按当时站位 → 当时礁区回填一版
+    const site = await db.sites.get(siteId)
+    const ownershipRow = {
+      beltId: row.id,
+      siteId,
+      siteNo: site?.no ?? row.no,
+      reefId: site?.reefId ?? '',
+      lastTransferId: null,
+      createdAt: now,
+      updatedAt: now
+    }
+    await db.transaction('rw', [db.belts, db.ownership], async () => {
+      await db.belts.put(row)
+      await db.ownership.put(ownershipRow)
+    })
     return row
   }
 
@@ -112,11 +126,12 @@ export const useBeltStore = defineStore('belt', () => {
     await db.belts.update(id, { ...patch, updatedAt: Date.now() } as never)
   }
 
-  /** 删除样带：级联删除其珊瑚记录与鱼类计数 */
+  /** 删除样带：级联删除其珊瑚记录、鱼类计数与外业队归属快照 */
   async function removeBelt(id: string): Promise<void> {
-    await db.transaction('rw', [db.belts, db.corals, db.fishes], async () => {
+    await db.transaction('rw', [db.belts, db.corals, db.fishes, db.ownership], async () => {
       await db.corals.where('beltId').equals(id).delete()
       await db.fishes.where('beltId').equals(id).delete()
+      await db.ownership.where('beltId').equals(id).delete()
       await db.belts.delete(id)
     })
     if (currentBeltId.value === id) selectBelt(null)
