@@ -11,6 +11,7 @@ import { Delete, Edit, Plus, Right, Warning } from '@element-plus/icons-vue'
 import StatBadge from '@/components/common/StatBadge.vue'
 import EmptyPanel from '@/components/common/EmptyPanel.vue'
 import BleachTag from '@/components/common/BleachTag.vue'
+import AttribTag from '@/components/common/AttribTag.vue'
 import RouteMissingPanel from '@/components/common/RouteMissingPanel.vue'
 import { useReefStore } from '@/stores/reefStore'
 import { ORIENTATION_ORDER, useBeltStore } from '@/stores/beltStore'
@@ -264,7 +265,18 @@ onMounted(() => {
       />
 
       <el-table v-else :data="rows" border stripe class="gb-table-compact">
-        <el-table-column prop="belt.no" label="样带编号" width="110" />
+        <el-table-column label="样带编号" width="150">
+          <template #default="{ row }">
+            <div class="gb-mono">{{ row.belt.no }}</div>
+            <AttribTag
+              v-if="row.belt.attribStatus === 'suspended'"
+              status="suspended"
+              :reason="row.belt.attribReason"
+              size="small"
+              class="gb-mt4"
+            />
+          </template>
+        </el-table-column>
         <el-table-column label="朝向" width="90" align="center">
           <template #default="{ row }">
             <el-tag size="small" effect="plain">{{ row.belt.orientation }}</el-tag>
@@ -405,6 +417,10 @@ onMounted(() => {
   display: flex;
   flex-wrap: wrap;
   gap: 2px;
+  margin-top: 4px;
+}
+
+.gb-mt4 {
   margin-top: 4px;
 }
 </style>

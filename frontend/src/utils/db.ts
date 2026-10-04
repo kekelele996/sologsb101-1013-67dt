@@ -11,9 +11,10 @@ import type { Site } from '@/types/site'
 import type { Belt } from '@/types/belt'
 import type { CoralRecord } from '@/types/coralRecord'
 import type { FishCount } from '@/types/fishCount'
+import type { ReefTransfer } from '@/types/transfer'
 
 /** 当前数据结构版本号：每次调整字段结构必须 +1 并补迁移 */
-export const DB_VERSION = 2
+export const DB_VERSION = 3
 
 /** 数据库名（浏览器 IndexedDB 中的库名） */
 export const DB_NAME = 'gbcoralbelt'
@@ -35,6 +36,8 @@ export interface BackupPayload {
   belts: Belt[]
   corals: CoralRecord[]
   fishes: FishCount[]
+  /** v3 起：界线划转单（旧备份可能缺省，按空数组处理） */
+  transfers?: ReefTransfer[]
 }
 
 export class CoralBeltDatabase extends Dexie {
@@ -43,9 +46,10 @@ export class CoralBeltDatabase extends Dexie {
   belts!: Table<Belt, string>
   corals!: Table<CoralRecord, string>
   fishes!: Table<FishCount, string>
+  transfers!: Table<ReefTransfer, string>
 
-  constructor() {
-    super(DB_NAME)
+  constructor(databaseName: string = DB_NAME) {
+    super(databaseName)
 
     // v1：初版结构（保留历史数据，仅基础索引）
     this.version(1).stores({
@@ -85,6 +89,45 @@ export class CoralBeltDatabase extends Dexie {
               Object.assign(row, factory())
             })
         }
+      })
+
+    // v3：保护区界线划转。样带补外业队归属账（站位编号/礁区/状态），新增划转单表。
+    this.version(DB_VERSION)
+      .stores({
+        reefs: 'id, name, location, protectStatus, areaKm2, manager, updatedAt',
+        sites: 'id, reefId, no, lat, lng, depthM, substrate, updatedAt',
+        belts:
+          'id, siteId, no, lengthM, orientation, surveyDate, observer, attribSiteNo, attribReefId, attribStatus, updatedAt',
+        corals: 'id, beltId, genus, form, coverCm, bleachLevel, updatedAt',
+        fishes: 'id, beltId, family, count, sizeClass, category, updatedAt',
+        transfers: 'id, no, status, updatedAt'
+      })
+      .upgrade(async (tx) => {
+        // 旧数据没有归属记录：按升级当时的站位 → 礁区关系回填一版外业队归属账。
+        const sites = await tx.table<Site, string>('sites').toArray()
+        const siteById = new Map(sites.map((site) => [site.id, site]))
+        await tx
+          .table<Belt, string>('belts')
+          .toCollection()
+          .modify((belt) => {
+            // 升级前的 v2 样带没有归属字段，运行时为 undefined，按当时站位回填
+            const legacy = belt as unknown as Record<string, unknown>
+            const site = siteById.get(belt.siteId)
+            if (typeof legacy.attribSiteNo !== 'string') {
+              belt.attribSiteNo = site ? site.no : belt.no
+            }
+            if (typeof legacy.attribReefId !== 'string') {
+              belt.attribReefId = site ? site.reefId : ''
+            }
+            if (belt.attribStatus !== 'active' && belt.attribStatus !== 'suspended') {
+              // 找不到当时站位的样带无法回填礁区，挂起等人定
+              belt.attribStatus = site ? 'active' : 'suspended'
+            }
+            if (typeof legacy.attribReason !== 'string') {
+              belt.attribReason = site ? '升级时按当时礁区回填归属' : '升级时找不到所属站位，挂起待人工裁定'
+            }
+            if (typeof legacy.attribUpdatedAt !== 'number') belt.attribUpdatedAt = 0
+          })
       })
   }
 }
@@ -142,6 +185,28 @@ interface SeedBelt {
   observer: string
   corals: SeedCoral[]
   fishes: SeedFish[]
+}
+
+/** 播种时样带归属账：按「当时礁区」回填，attribSiteNo 与站位编号一致 */
+function withAttrib(
+  siteId: string,
+  no: string,
+  siteBySeedId: Map<string, { no: string; reefId: string }>
+): {
+  attribSiteNo: string
+  attribReefId: string
+  attribStatus: 'active'
+  attribReason: string
+  attribUpdatedAt: number
+} {
+  const site = siteBySeedId.get(siteId)
+  return {
+    attribSiteNo: site ? site.no : no,
+    attribReefId: site ? site.reefId : '',
+    attribStatus: 'active',
+    attribReason: '播种时按当时礁区回填归属',
+    attribUpdatedAt: 0
+  }
 }
 
 /**
@@ -314,11 +379,15 @@ export async function seedDemoData(): Promise<void> {
     }
   ]
 
-  await db.transaction('rw', [db.reefs, db.sites, db.belts, db.corals, db.fishes], async () => {
+  await db.transaction('rw', [db.reefs, db.sites, db.belts, db.corals, db.fishes, db.transfers], async () => {
     const stamp = (offset: number): { createdAt: number; updatedAt: number } => ({
       createdAt: now + offset,
       updatedAt: now + offset
     })
+
+    const siteBySeedId = new Map<string, { no: string; reefId: string }>(
+      sites.map((site) => [site.id, { no: site.no, reefId: site.reefId }])
+    )
 
     await db.reefs.bulkPut(reefs.map((reef, index) => ({ ...reef, ...stamp(index) })))
     await db.sites.bulkPut(sites.map((site, index) => ({ ...site, ...stamp(100 + index) })))
@@ -327,7 +396,7 @@ export async function seedDemoData(): Promise<void> {
         const { corals, fishes, ...rest } = belt
         void corals
         void fishes
-        return { ...rest, ...stamp(200 + index) }
+        return { ...rest, ...withAttrib(belt.siteId, belt.no, siteBySeedId), ...stamp(200 + index) }
       })
     )
     await db.corals.bulkPut(
@@ -353,11 +422,22 @@ export async function initDatabase(): Promise<void> {
   stampDbVersion()
 }
 
-/** 清空全部业务表（导入覆盖与重置共用） */
+/** 清空全部业务表（导入覆盖与重置共用，含划转单） */
 export async function clearAllTables(): Promise<void> {
-  await db.transaction('rw', [db.reefs, db.sites, db.belts, db.corals, db.fishes], async () => {
-    await Promise.all([db.reefs.clear(), db.sites.clear(), db.belts.clear(), db.corals.clear(), db.fishes.clear()])
-  })
+  await db.transaction(
+    'rw',
+    [db.reefs, db.sites, db.belts, db.corals, db.fishes, db.transfers],
+    async () => {
+      await Promise.all([
+        db.reefs.clear(),
+        db.sites.clear(),
+        db.belts.clear(),
+        db.corals.clear(),
+        db.fishes.clear(),
+        db.transfers.clear()
+      ])
+    }
+  )
 }
 
 /** 清空并重新播种演示数据 */

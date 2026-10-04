@@ -8,7 +8,10 @@
     "dev": "vite",
     "build": "vue-tsc --noEmit && vite build",
     "preview": "vite preview --port 22813",
-    "typecheck": "vue-tsc --noEmit"
+    "typecheck": "vue-tsc --noEmit",
+    "smoke:transfer": "esbuild src/__tests__/transfer.smoke.ts --bundle --platform=node --format=esm --alias:@=./src --outfile=node_modules/.tmp-transfer-smoke.mjs && node node_modules/.tmp-transfer-smoke.mjs",
+    "smoke:migration": "esbuild src/__tests__/migration.smoke.ts --bundle --platform=node --format=esm --alias:@=./src --outfile=node_modules/.tmp-migration.mjs && node node_modules/.tmp-migration.mjs",
+    "smoke": "npm run smoke:transfer && npm run smoke:migration"
   },
   "dependencies": {
     "@element-plus/icons-vue": "^2.3.1",
@@ -21,6 +24,7 @@
   "devDependencies": {
     "@types/node": "^22.20.4",
     "@vitejs/plugin-vue": "^5.2.1",
+    "fake-indexeddb": "^6.2.5",
     "typescript": "~5.7.3",
     "vite": "^6.1.0",
     "vue-tsc": "^2.2.0"

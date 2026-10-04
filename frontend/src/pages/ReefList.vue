@@ -17,6 +17,7 @@ import EmptyPanel from '@/components/common/EmptyPanel.vue'
 import { useReefStore } from '@/stores/reefStore'
 import { useBeltStore } from '@/stores/beltStore'
 import { useSurveyStore } from '@/stores/surveyStore'
+import { useAttribution } from '@/hooks/useAttribution'
 import { AREA_BUCKETS, createEmptyReefFilter, PROTECT_STATUSES } from '@/types/reef'
 import type { ProtectStatus, Reef } from '@/types/reef'
 import { bleachGrade, bleachIndex } from '@/utils/bleach'
@@ -27,6 +28,7 @@ const router = useRouter()
 const reefStore = useReefStore()
 const beltStore = useBeltStore()
 const surveyStore = useSurveyStore()
+const attribution = useAttribution()
 
 const dialogVisible = ref(false)
 const editingId = ref<string | null>(null)
@@ -40,12 +42,13 @@ const form = reactive({
   manager: ''
 })
 
-/** 礁区卡片：汇总站位/样带/珊瑚记录数与平均白化指数 */
+/** 礁区卡片：站位以保护站账为准；样带/珊瑚/白化结论以外业归属账对账口径为准 */
 const cards = computed(() =>
   reefStore.filteredReefs.map((reef: Reef) => {
     const sites = reefStore.sites.filter((site) => site.reefId === reef.id)
-    const siteIds = new Set(sites.map((site) => site.id))
-    const belts = beltStore.belts.filter((belt) => siteIds.has(belt.siteId))
+    // 只统计两账对得上、确实计入本礁区结论的样带；划走/挂起的不算
+    const reefBeltIds = attribution.beltIdsForReef(reef.id).value
+    const belts = beltStore.belts.filter((belt) => reefBeltIds.has(belt.id))
     const beltIds = new Set(belts.map((belt) => belt.id))
     const corals = surveyStore.corals.filter((coral) => beltIds.has(coral.beltId))
     const fishes = surveyStore.fishes.filter((fish) => beltIds.has(fish.beltId))

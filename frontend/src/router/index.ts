@@ -43,6 +43,12 @@ const routes: RouteRecordRaw[] = [
     component: () => import('@/pages/CoverageView.vue'),
     meta: { title: '白化等级评定与覆盖度汇总', icon: 'PieChart' }
   },
+  {
+    path: '/transfers',
+    name: 'transfer-board',
+    component: () => import('@/pages/TransferBoard.vue'),
+    meta: { title: '保护区界线划转与归属对账', icon: 'Switch' }
+  },
   { path: '/:pathMatch(.*)*', redirect: '/reefs' }
 ]
 

@@ -7,6 +7,7 @@ import { computed, ref } from 'vue'
 import { db, createId, watchTable } from '@/utils/db'
 import type { Belt, BeltDraft, Orientation } from '@/types/belt'
 import { ORIENTATIONS, createEmptyBeltDraft } from '@/types/belt'
+import { useReefStore } from '@/stores/reefStore'
 
 /** 朝向排序权重：北 → 东 → 南 → 西 */
 export const ORIENTATION_ORDER: Record<Orientation, number> = {
@@ -100,10 +101,35 @@ export const useBeltStore = defineStore('belt', () => {
 
   async function createBelt(
     siteId: string,
-    payload: Omit<Belt, 'id' | 'createdAt' | 'updatedAt' | 'siteId'>
+    payload: Omit<
+      Belt,
+      | 'id'
+      | 'createdAt'
+      | 'updatedAt'
+      | 'siteId'
+      | 'attribSiteNo'
+      | 'attribReefId'
+      | 'attribStatus'
+      | 'attribReason'
+      | 'attribUpdatedAt'
+    >
   ): Promise<Belt> {
     const now = Date.now()
-    const row: Belt = { ...payload, siteId, id: createId('belt'), createdAt: now, updatedAt: now }
+    // 新样带在外业归属账按「站位当时所属礁区」建账，与保护站账一致
+    const reefStore = useReefStore()
+    const site = reefStore.siteById(siteId)
+    const row: Belt = {
+      ...payload,
+      siteId,
+      id: createId('belt'),
+      attribSiteNo: site?.no ?? payload.no,
+      attribReefId: site?.reefId ?? '',
+      attribStatus: site ? 'active' : 'suspended',
+      attribReason: site ? '新建样带时按站位当时礁区建账' : '新建样带时找不到站位，挂起待人工裁定',
+      attribUpdatedAt: now,
+      createdAt: now,
+      updatedAt: now
+    }
     await db.belts.put(row)
     return row
   }

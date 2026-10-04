@@ -12,6 +12,7 @@ import type { Reef } from '@/types/reef'
 import type { Site } from '@/types/site'
 import type { Belt } from '@/types/belt'
 import { bleachGrade, bleachIndex, bleachedSharePct, coralCoveragePct, fishDensity, round } from '@/utils/bleach'
+import { effectiveBeltReefId } from '@/utils/attribution'
 
 /** 覆盖度汇总页筛选条件 */
 export interface SurveyFilterState {
@@ -35,10 +36,16 @@ export function createEmptySurveyFilter(): SurveyFilterState {
 export interface CoverageSummaryRow {
   beltId: string
   beltNo: string
+  /** 计入结论的礁区 id；挂起/对不上为 '' */
   reefId: string
   reefName: string
   siteId: string
   siteNo: string
+  /** 外业归属账状态 */
+  attribStatus: Belt['attribStatus']
+  /** 是否挂起 / 两账对不上 */
+  pending: boolean
+  pendingReason: string
   lengthM: number
   orientation: string
   surveyDate: string
@@ -137,12 +144,20 @@ export const useSurveyStore = defineStore('survey', () => {
     return counts
   })
 
-  /** 覆盖度汇总行（全部样带） */
-  const coverageRows = computed<CoverageSummaryRow[]>(() =>
-    belts.value
+  /** 覆盖度汇总行（全部样带，礁区归属以外业账按站位编号对账结果为准） */
+  const coverageRows = computed<CoverageSummaryRow[]>(() => {
+    const siteById = new Map(sites.value.map((site) => [site.id, site]))
+    return belts.value
       .map((belt) => {
-        const site = sites.value.find((item) => item.id === belt.siteId)
-        const reef = site ? reefs.value.find((item) => item.id === site.reefId) : undefined
+        const site = siteById.get(belt.siteId)
+        const effectiveReefId = effectiveBeltReefId(belt, siteById)
+        const pending = effectiveReefId === null
+        const pendingReason = pending
+          ? belt.attribStatus === 'suspended'
+            ? belt.attribReason || '样带已挂起，等待人工裁定归属'
+            : '外业账与保护站账按站位编号对不上，暂不计入礁区结论'
+          : ''
+        const reef = effectiveReefId ? reefs.value.find((item) => item.id === effectiveReefId) : undefined
         const beltCorals = corals.value.filter((coral) => coral.beltId === belt.id)
         const beltFishes = fishes.value.filter((fish) => fish.beltId === belt.id)
         const coverCmTotal = round(
@@ -162,9 +177,12 @@ export const useSurveyStore = defineStore('survey', () => {
           beltId: belt.id,
           beltNo: belt.no,
           reefId: reef?.id ?? '',
-          reefName: reef?.name ?? '未知礁区',
+          reefName: pending ? '挂起 · 待人工定归属' : reef?.name ?? '未知礁区',
           siteId: site?.id ?? '',
-          siteNo: site?.no ?? '—',
+          siteNo: belt.attribSiteNo || site?.no || '—',
+          attribStatus: belt.attribStatus,
+          pending,
+          pendingReason,
           lengthM: belt.lengthM,
           orientation: belt.orientation,
           surveyDate: belt.surveyDate,
@@ -184,7 +202,7 @@ export const useSurveyStore = defineStore('survey', () => {
         }
       })
       .sort((a, b) => b.bleachIndex - a.bleachIndex)
-  )
+  })
 
   /** 按筛选条件过滤后的覆盖度行 */
   const filteredCoverageRows = computed<CoverageSummaryRow[]>(() =>

@@ -21,6 +21,7 @@ import {
   groupByGenus,
   round
 } from '@/utils/bleach'
+import { effectiveBeltReefId } from '@/utils/attribution'
 
 /** 单条样带的覆盖度成果 */
 export interface BeltCoverage {
@@ -28,8 +29,14 @@ export interface BeltCoverage {
   beltNo: string
   siteId: string
   siteNo: string
+  /** 计入结论的礁区 id；挂起/对不上为 '' */
   reefId: string
   reefName: string
+  /** 外业归属账状态 */
+  attribStatus: string
+  /** 是否挂起 / 两账对不上 */
+  pending: boolean
+  pendingReason: string
   lengthM: number
   orientation: string
   surveyDate: string
@@ -63,6 +70,8 @@ export interface SiteCoverage {
   reefName: string
   depthM: number
   beltCount: number
+  /** 挂起 / 两账对不上、未计入结论的样带数 */
+  pendingBeltCount: number
   coralCount: number
   coverCmTotal: number
   /** 站位平均覆盖率（各样本带覆盖率均值） */
@@ -129,7 +138,15 @@ export function useCoverage(): UseCoverageResult {
     const belt = belts.value.find((item) => item.id === beltId)
     if (!belt) return null
     const site = siteOf(belt.siteId)
-    const reef = site ? reefOf(site.reefId) : null
+    const siteMap = new Map(sites.value.map((item) => [item.id, item]))
+    const effectiveReefId = effectiveBeltReefId(belt, siteMap)
+    const pending = effectiveReefId === null
+    const pendingReason = pending
+      ? belt.attribStatus === 'suspended'
+        ? belt.attribReason || '样带已挂起，等待人工裁定归属'
+        : '外业账与保护站账按站位编号对不上，暂不计入礁区结论'
+      : ''
+    const reef = effectiveReefId ? reefOf(effectiveReefId) : null
     const beltCorals = corals.value.filter((coral) => coral.beltId === belt.id)
     const beltFishes = fishes.value.filter((fish) => fish.beltId === belt.id)
     const coverCmTotal = round(
@@ -152,9 +169,12 @@ export function useCoverage(): UseCoverageResult {
       beltId: belt.id,
       beltNo: belt.no,
       siteId: site?.id ?? '',
-      siteNo: site?.no ?? '—',
+      siteNo: belt.attribSiteNo || site?.no || '—',
       reefId: reef?.id ?? '',
-      reefName: reef?.name ?? '未知礁区',
+      reefName: pending ? '挂起 · 待人工定归属' : reef?.name ?? '未知礁区',
+      attribStatus: belt.attribStatus,
+      pending,
+      pendingReason,
       lengthM: belt.lengthM,
       orientation: belt.orientation,
       surveyDate: belt.surveyDate,
@@ -188,8 +208,12 @@ export function useCoverage(): UseCoverageResult {
   function buildSiteCoverage(siteId: string): SiteCoverage | null {
     const site = siteOf(siteId)
     if (!site) return null
+    const siteMap = new Map(sites.value.map((item) => [item.id, item]))
+    const allSiteBelts = belts.value.filter((belt) => belt.siteId === site.id)
+    // 站位结论只汇总两账对得上、真正归属本站位的样带；挂起的单列计数
+    const siteBelts = allSiteBelts.filter((belt) => effectiveBeltReefId(belt, siteMap) === site.reefId)
+    const pendingBelts = allSiteBelts.filter((belt) => effectiveBeltReefId(belt, siteMap) === null)
     const reef = reefOf(site.reefId)
-    const siteBelts = belts.value.filter((belt) => belt.siteId === site.id)
     const beltIds = new Set(siteBelts.map((belt) => belt.id))
     const siteCorals = corals.value.filter((coral) => beltIds.has(coral.beltId))
     const siteFishes = fishes.value.filter((fish) => beltIds.has(fish.beltId))
@@ -216,6 +240,7 @@ export function useCoverage(): UseCoverageResult {
       reefName: reef?.name ?? '未知礁区',
       depthM: site.depthM,
       beltCount: siteBelts.length,
+      pendingBeltCount: pendingBelts.length,
       coralCount: siteCorals.length,
       coverCmTotal,
       avgCoveragePct:

@@ -31,6 +31,7 @@ import {
 } from '@/utils/db'
 import {
   buildBackupPayload,
+  buildCoverageLines,
   buildReefSummaries,
   countPayload,
   exportBackupJson,
@@ -40,6 +41,7 @@ import {
   validateBackup,
   type CountMap
 } from '@/utils/export'
+import AttribTag from '@/components/common/AttribTag.vue'
 
 const route = useRoute()
 const router = useRouter()
@@ -104,30 +106,12 @@ async function refresh(): Promise<void> {
   lastBackupAt.value = readLastBackupAt()
   stampedVersion.value = readStampedDbVersion()
   const payload = await buildBackupPayload()
-  reefSummaries.value = buildReefSummaries(payload, surveyStore.coverageRows.map((row) => ({
-    beltId: row.beltId,
-    beltNo: row.beltNo,
-    reefId: row.reefId,
-    reefName: row.reefName,
-    siteId: row.siteId,
-    siteNo: row.siteNo,
-    lengthM: row.lengthM,
-    orientation: row.orientation,
-    surveyDate: row.surveyDate,
-    observer: row.observer,
-    coralCount: row.coralCount,
-    coverCmTotal: row.coverCmTotal,
-    coveragePct: row.coveragePct,
-    bleachIndex: row.bleachIndex,
-    grade: row.grade,
-    bleachedSharePct: row.bleachedSharePct,
-    distribution: row.distribution,
-    fishTotal: row.fishTotal,
-    invertebrateTotal: row.invertebrateTotal,
-    fishDensity: row.fishDensity,
-    conclusion: ''
-  })))
+  // 礁区白化结论以两账按站位编号对账的结果为准（划走样带不再算原礁区，挂起的不计入）
+  reefSummaries.value = buildReefSummaries(payload, buildCoverageLines(payload))
 }
+
+/** 挂起/对不上、未计入任何礁区结论的样带行 */
+const pendingRows = computed(() => surveyStore.coverageRows.filter((row) => row.pending))
 
 function handleFilterChange(): void {
   void router.replace({
@@ -261,6 +245,20 @@ onMounted(() => {
 
     <el-alert v-if="notice" type="success" :closable="false" show-icon :title="notice" />
 
+    <el-alert
+      v-if="pendingRows.length > 0"
+      type="warning"
+      show-icon
+      :closable="false"
+      class="gb-pending-alert"
+    >
+      <template #title>
+        有 {{ pendingRows.length }} 条样带两账对不上 / 已挂起，未计入任何礁区白化结论，请到
+        <router-link class="gb-link" to="/transfers">界线划转</router-link>
+        页按站位编号对账并人工裁定。
+      </template>
+    </el-alert>
+
     <div class="gb-stats-row">
       <StatBadge label="样带数" :value="totals.belts" suffix="条" icon="Files" />
       <StatBadge label="珊瑚记录" :value="totals.coralCount" suffix="条" tone="info" icon="Histogram" />
@@ -336,8 +334,15 @@ onMounted(() => {
       <el-table v-else :data="rows" border stripe class="gb-table-compact">
         <el-table-column label="礁区 / 站位" min-width="180">
           <template #default="{ row }">
-            <div>{{ row.reefName }}</div>
+            <div :class="row.pending ? 'gb-warn' : ''">{{ row.reefName }}</div>
             <div class="gb-hint">站位 {{ row.siteNo }} · 样带 {{ row.beltNo }}（{{ row.orientation }}向）</div>
+            <AttribTag
+              v-if="row.pending"
+              status="suspended"
+              :reason="row.pendingReason"
+              size="small"
+              class="gb-mt4"
+            />
           </template>
         </el-table-column>
         <el-table-column label="样带长度" width="110" align="right">
@@ -410,6 +415,13 @@ onMounted(() => {
         <el-table-column label="站位 / 样带" width="130" align="right">
           <template #default="{ row }">
             <span class="gb-mono">{{ row.siteCount }} / {{ row.beltCount }}</span>
+          </template>
+        </el-table-column>
+        <el-table-column label="挂起未计" width="100" align="right">
+          <template #default="{ row }">
+            <span :class="row.pendingBeltCount > 0 ? 'gb-warn gb-mono' : 'gb-hint gb-mono'">
+              {{ row.pendingBeltCount }} 条
+            </span>
           </template>
         </el-table-column>
         <el-table-column label="珊瑚记录" width="110" align="right">
@@ -529,5 +541,23 @@ onMounted(() => {
 .page__mini-bar {
   display: block;
   height: 100%;
+}
+
+.gb-pending-alert {
+  align-items: center;
+}
+
+.gb-link {
+  color: #0b5d5a;
+  font-weight: 600;
+  text-decoration: underline;
+}
+
+.gb-warn {
+  color: #9a6700;
+}
+
+.gb-mt4 {
+  margin-top: 4px;
 }
 </style>
